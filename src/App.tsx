@@ -1,23 +1,25 @@
 /* eslint-disable */
-import { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { useMediaQuery } from '@mantine/hooks';
 import { BrowserMultiFormatReader } from '@zxing/library';
 
-export default function App () {
-  const isMobile = useMediaQuery('(max-width: 767px)' );
+type DecodedVinData = Record<string, string>;
+
+export default function VINLookup() {
+  const isMobile = useMediaQuery('(max-width: 767px)');
   const [vin, setVin] = useState('');
-  const [decoded, setDecoded] = useState<any>(null);
+  const [decoded, setDecoded] = useState<DecodedVinData | null>(null);
   const [error, setError] = useState('');
   const scannerRef = useRef<HTMLVideoElement>(null);
+  const codeReader = useRef<BrowserMultiFormatReader | null>(null);
 
   useEffect(() => {
+    // Cleanup on unmount: stop all media tracks & reset codeReader
     return () => {
-      if (
-          scannerRef.current &&
-          scannerRef.current.srcObject instanceof MediaStream
-      ) {
+      if (scannerRef.current?.srcObject instanceof MediaStream) {
         scannerRef.current.srcObject.getTracks().forEach((track) => track.stop());
       }
+      codeReader.current?.reset();
     };
   }, []);
 
@@ -29,66 +31,92 @@ export default function App () {
           `https://vpic.nhtsa.dot.gov/api/vehicles/DecodeVinValuesExtended/${vinCode}?format=json`
       );
       const json = await res.json();
-      if (json.Results && json.Results[0]) {
+      if (json?.Results?.[0]) {
         setDecoded(json.Results[0]);
       } else {
-        setError('Не удалось найти данные по VIN');
+        setError('Could not find data for this VIN');
       }
     } catch (e) {
       console.error(e);
-      setError('Ошибка запроса');
+      setError('Error fetching VIN data');
     }
   };
 
   const handleSubmit = () => {
-    if (vin.length >= 17) {
+    if (vin.length === 17) {
       decodeVIN(vin);
     } else {
-      setError('VIN должен быть 17 символов');
+      setError('VIN must be exactly 17 characters');
     }
   };
 
-  const startScan = () => {
-    setDecoded(null);
+  const startScan = async () => {
     setError('');
-    const codeReader = new BrowserMultiFormatReader();
-    codeReader
-        .listVideoInputDevices()
-        .then((devices) => {
-          const videoInputDeviceId = devices[0]?.deviceId;
-          if (!videoInputDeviceId) {
-            setError('Камера не найдена');
-            return;
-          }
-          codeReader.decodeFromVideoDevice(
-              videoInputDeviceId,
-              scannerRef.current!,
-              (result) => {
-                if (result) {
-                  codeReader.reset();
-                  const vinCode = result.getText();
-                  setVin(vinCode);
-                  decodeVIN(vinCode);
-                }
+    setDecoded(null);
+
+    try {
+      codeReader.current = new BrowserMultiFormatReader();
+
+      // Request access to back camera explicitly
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: 'environment' },
+      });
+
+      if (scannerRef.current) {
+        scannerRef.current.srcObject = stream;
+      }
+
+      // List all video input devices for debugging
+      const devices = await codeReader.current.listVideoInputDevices();
+      console.log('Video input devices:', devices);
+
+      const videoInputDeviceId = devices[0]?.deviceId;
+      if (!videoInputDeviceId) {
+        setError('No camera found on this device');
+        stream.getTracks().forEach((t) => t.stop());
+        return;
+      }
+
+      codeReader.current.decodeFromVideoDevice(
+          videoInputDeviceId,
+          scannerRef.current!,
+          (result, err) => {
+            if (result) {
+              codeReader.current?.reset();
+              const scannedVin = result.getText();
+              setVin(scannedVin);
+              decodeVIN(scannedVin);
+
+              // Stop video stream after successful scan
+              if (scannerRef.current?.srcObject instanceof MediaStream) {
+                scannerRef.current.srcObject.getTracks().forEach((track) => track.stop());
               }
-          );
-        })
-        .catch((err) => {
-          console.error(err);
-          setError('Ошибка запуска сканнера');
-        });
+            }
+            if (err && !(err.name === 'NotFoundException')) {
+              console.error(err);
+              setError('Error scanning VIN');
+            }
+          }
+      );
+    } catch (err) {
+      console.error('getUserMedia error:', err);
+      setError('Camera access denied or not available');
+    }
   };
 
   return (
       <div style={{ padding: 16 }}>
         {isMobile ? (
             <>
-              <button onClick={startScan}>Scan VIN</button>
+              <button type="button" onClick={startScan}>
+                Scan VIN
+              </button>
               <video
                   ref={scannerRef}
                   style={{ width: '100%', marginTop: 10 }}
                   autoPlay
                   muted
+                  playsInline
               />
             </>
         ) : (
@@ -97,10 +125,11 @@ export default function App () {
                   type="text"
                   value={vin}
                   onChange={(e) => setVin(e.target.value.toUpperCase())}
-                  placeholder="Введите VIN (17 символов)"
+                  placeholder="Enter VIN (17 characters)"
                   style={{ padding: '8px', width: '300px' }}
+                  maxLength={17}
               />
-              <button onClick={handleSubmit} style={{ marginLeft: '8px' }}>
+              <button type="button" onClick={handleSubmit} style={{ marginLeft: '8px' }}>
                 Decode
               </button>
             </div>
@@ -129,12 +158,12 @@ export default function App () {
                   ['Engine Horsepower', decoded.EngineHP],
                   ['Displacement (L)', decoded.DisplacementL],
                   ['Cylinders', decoded.EngineCylinders],
-                  ['Cruise Control (Adaptive)', decoded.AdaptiveCruiseControl],
+                  ['Adaptive Cruise Control', decoded.AdaptiveCruiseControl],
                   ['Blind Spot Monitoring', decoded.BlindSpotMon],
                   ['Lane Keep Assist', decoded.LaneKeepSystem],
                   ['Lane Departure Warning', decoded.LaneDepartureWarning],
                   ['Forward Collision Warning', decoded.ForwardCollisionWarning],
-                  ['Auto Emergency Braking', decoded.PedestrianAutomaticEmergencyBraking],
+                  ['Automatic Emergency Braking', decoded.PedestrianAutomaticEmergencyBraking],
                   ['ABS', decoded.ABS],
                   ['ESC (Stability Control)', decoded.ESC],
                   ['Front Airbags', decoded.AirBagLocFront],
@@ -154,19 +183,28 @@ export default function App () {
                   ['Plant City', decoded.PlantCity],
                   ['Manufacturer', decoded.Manufacturer],
                   ['GVWR Class', decoded.GVWR],
-                ].map(([label, value]) =>
-                    value ? (
+                ]
+                    .filter(([, value]) => value && value !== '')
+                    .map(([label, value]) => (
                         <tr key={label}>
-                          <td style={{ border: '1px solid #ccc', padding: '8px', fontWeight: 'bold', background: '#f9f9f9' }}>{label}</td>
+                          <td
+                              style={{
+                                border: '1px solid #ccc',
+                                padding: '8px',
+                                fontWeight: 'bold',
+                                background: '#f9f9f9',
+                                width: '35%',
+                              }}
+                          >
+                            {label}
+                          </td>
                           <td style={{ border: '1px solid #ccc', padding: '8px' }}>{value}</td>
                         </tr>
-                    ) : null
-                )}
+                    ))}
                 </tbody>
               </table>
             </div>
         )}
-
       </div>
   );
-};
+}
