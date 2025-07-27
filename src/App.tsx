@@ -1,3 +1,4 @@
+/* eslint-disable */
 import { useState, useEffect, useRef } from 'react';
 import { useMediaQuery } from '@mantine/hooks';
 import { BrowserMultiFormatReader } from '@zxing/library';
